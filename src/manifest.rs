@@ -52,6 +52,8 @@ pub struct Manifest {
     #[serde(rename = "runtime-version")]
     pub runtime_version: String,
     pub command: String,
+    #[serde(rename = "x-run-args")]
+    pub x_run_args: Option<Vec<String>>,
     #[serde(default)]
     pub modules: Vec<Module>,
     #[serde(rename = "finish-args", default)]

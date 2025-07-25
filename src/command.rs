@@ -24,20 +24,20 @@ fn command_succeeds(cmd: &str, args: &[&str]) -> bool {
 
 // Runs a command, handling Flatpak sandbox and container specifics.
 pub fn run_command(command: &str, args: &[&str]) -> Result<()> {
-    let mut args = args.to_vec();
+    let mut command_args = args.to_vec();
 
     // Workaround for rofiles-fuse issues in containers.
     if command == "flatpak-builder"
         && is_inside_container()
-        && !args.contains(&"--disable-rofiles-fuse")
+        && !command_args.contains(&"--disable-rofiles-fuse")
     {
-        args.push("--disable-rofiles-fuse");
+        command_args.push("--disable-rofiles-fuse");
     }
 
-    let (program, args) = if is_sandboxed() {
+    let (program, final_args) = if is_sandboxed() {
         if command_succeeds("host-spawn", &["--version"]) {
             let mut new_args = vec![command];
-            new_args.extend_from_slice(&args);
+            new_args.extend_from_slice(&command_args);
             ("host-spawn", new_args)
         } else {
             let mut new_args = vec![
@@ -46,26 +46,26 @@ pub fn run_command(command: &str, args: &[&str]) -> Result<()> {
                 "--env=TERM=xterm-256color",
                 command,
             ];
-            new_args.extend_from_slice(&args);
+            new_args.extend_from_slice(&command_args);
             ("flatpak-spawn", new_args)
         }
     } else {
-        (command, args)
+        (command, command_args)
     };
 
     println!(
         "\n{} {} {}",
         ">".purple().bold(),
         program.italic(),
-        args.join(" ").italic()
+        final_args.join(" ").italic()
     );
-    let mut command = Command::new(program)
-        .args(&args)
+    let mut command_process = Command::new(program)
+        .args(&final_args)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()?;
 
-    let status = command.wait()?;
+    let status = command_process.wait()?;
 
     if !status.success() {
         return Err(anyhow::anyhow!(

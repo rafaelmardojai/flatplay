@@ -1,6 +1,7 @@
 pub mod command;
 pub mod manifest;
 pub mod state;
+pub mod utils;
 
 use anyhow::Result;
 use colored::*;
@@ -10,6 +11,7 @@ use dialoguer::{Select, theme::ColorfulTheme};
 use manifest::Manifest;
 use state::State;
 use std::fs;
+use utils::{get_a11y_bus_args, get_host_env};
 use walkdir::WalkDir;
 
 const BUILD_DIR: &str = ".flatplay";
@@ -138,36 +140,49 @@ impl FlatpakManager {
                     let buildsystem = buildsystem.as_deref();
                     match buildsystem {
                         Some("meson") => {
+                            let build_dir = format!("{}/_build", BUILD_DIR);
                             let mut meson_args = vec!["build", &repo_dir, "meson", "setup"];
                             if let Some(config_opts) = config_opts {
                                 meson_args.extend(config_opts.iter().map(|s| s.as_str()));
                             }
-                            meson_args.extend(&["--prefix=/app", "_build"]);
+                            meson_args.extend(&["--prefix=/app", &build_dir]);
                             run_command("flatpak", &meson_args)?;
-                            run_command("flatpak", &["build", &repo_dir, "ninja", "-C", "_build"])?;
                             run_command(
                                 "flatpak",
-                                &["build", &repo_dir, "meson", "install", "-C", "_build"],
+                                &["build", &repo_dir, "ninja", "-C", &build_dir],
+                            )?;
+                            run_command(
+                                "flatpak",
+                                &["build", &repo_dir, "meson", "install", "-C", &build_dir],
                             )?;
                         }
                         Some("cmake") | Some("cmake-ninja") => {
+                            let build_dir = format!("{}/_build", BUILD_DIR);
+                            let b_flag = format!("-B{}", build_dir);
                             let mut cmake_args = vec![
                                 "build",
                                 &repo_dir,
                                 "cmake",
                                 "-G",
                                 "Ninja",
-                                "..",
-                                ".",
+                                &b_flag,
+                                "-DCMAKE_EXPORT_COMPILE_COMMANDS=1",
+                                "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
                                 "-DCMAKE_INSTALL_PREFIX=/app",
                             ];
                             if let Some(config_opts) = config_opts {
                                 cmake_args.extend(config_opts.iter().map(|s| s.as_str()));
                             }
-                            run_command("mkdir", &["-p", &format!("{}/_build", BUILD_DIR)])?;
+                            cmake_args.push(".");
                             run_command("flatpak", &cmake_args)?;
-                            run_command("flatpak", &["build", &repo_dir, "ninja"])?;
-                            run_command("flatpak", &["build", &repo_dir, "ninja", "install"])?;
+                            run_command(
+                                "flatpak",
+                                &["build", &repo_dir, "ninja", "-C", &build_dir],
+                            )?;
+                            run_command(
+                                "flatpak",
+                                &["build", &repo_dir, "ninja", "-C", &build_dir, "install"],
+                            )?;
                         }
                         Some("simple") => {
                             if let Some(build_commands) = build_commands {
@@ -333,17 +348,38 @@ impl FlatpakManager {
         }
 
         let manifest = self.manifest.as_ref().unwrap();
-        let manifest_path = self.state.active_manifest.as_ref().unwrap();
         let repo_dir = format!("{}/repo", BUILD_DIR);
 
-        let args = vec![
-            "--run",
-            &repo_dir,
-            manifest_path.to_str().unwrap(),
-            &manifest.command,
+        let mut args = vec![
+            "build".to_string(),
+            "--with-appdir".to_string(),
+            "--allow=devel".to_string(),
+            "--talk-name=org.freedesktop.portal.*".to_string(),
+            "--talk-name=org.a11y.Bus".to_string(),
         ];
 
-        flatpak_builder(&args)
+        for (key, value) in get_host_env() {
+            args.push(format!("--env={}={}", key, value));
+        }
+
+        for arg in get_a11y_bus_args() {
+            args.push(arg);
+        }
+
+        for arg in &manifest.finish_args {
+            args.push(arg.clone());
+        }
+        args.push(repo_dir);
+        args.push(manifest.command.clone());
+        if let Some(x_run_args) = &manifest.x_run_args {
+            for arg in x_run_args {
+                args.push(arg.clone());
+            }
+        }
+
+        let args_str: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
+        run_command("flatpak", &args_str)
     }
 
     pub fn clean(&mut self) -> Result<()> {
