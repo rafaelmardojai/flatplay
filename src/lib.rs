@@ -1,5 +1,6 @@
 pub mod command;
 pub mod manifest;
+pub mod process;
 pub mod state;
 pub mod utils;
 
@@ -7,12 +8,14 @@ use anyhow::Result;
 use colored::*;
 
 use command::{flatpak_builder, run_command};
-use dialoguer::{Select, theme::ColorfulTheme};
+use dialoguer::{theme::ColorfulTheme, Select};
 use manifest::Manifest;
 use state::State;
 use std::fs;
 use utils::{get_a11y_bus_args, get_host_env};
 use walkdir::WalkDir;
+
+use crate::process::kill_process_group;
 
 const BUILD_DIR: &str = ".flatplay";
 
@@ -67,8 +70,7 @@ impl FlatpakManager {
         Ok(())
     }
 
-    pub fn new() -> Result<Self> {
-        let state = State::load()?;
+    pub fn new(state: State) -> Result<Self> {
         let manifest = if let Some(path) = &state.active_manifest {
             Some(Manifest::from_file(path)?)
         } else {
@@ -82,10 +84,10 @@ impl FlatpakManager {
     }
 
     fn is_build_initialized(&self) -> Result<bool> {
-        let repo_dir = format!("{}/repo", BUILD_DIR);
-        let metadata_file = format!("{}/metadata", repo_dir);
-        let files_dir = format!("{}/files", repo_dir);
-        let var_dir = format!("{}/var", repo_dir);
+        let repo_dir = format!("{BUILD_DIR}/repo");
+        let metadata_file = format!("{repo_dir}/metadata");
+        let files_dir = format!("{repo_dir}/files");
+        let var_dir = format!("{repo_dir}/var");
 
         // Check if all required directories and files exist
         // From gnome-builder: https://gitlab.gnome.org/GNOME/gnome-builder/-/blob/8579055f5047a0af5462e8a587b0742014d71d64/src/plugins/flatpak/gbp-flatpak-pipeline-addin.c#L220
@@ -96,7 +98,7 @@ impl FlatpakManager {
 
     fn init_build(&self) -> Result<()> {
         let manifest = self.manifest.as_ref().unwrap();
-        let repo_dir = format!("{}/repo", BUILD_DIR);
+        let repo_dir = format!("{BUILD_DIR}/repo");
 
         println!("{}", "Initializing build environment...".bold());
         run_command(
@@ -127,7 +129,7 @@ impl FlatpakManager {
 
     fn build_application(&self) -> Result<()> {
         let manifest = self.manifest.as_ref().unwrap();
-        let repo_dir = format!("{}/repo", BUILD_DIR);
+        let repo_dir = format!("{BUILD_DIR}/repo");
 
         if let Some(module) = manifest.modules.last() {
             match module {
@@ -140,7 +142,7 @@ impl FlatpakManager {
                     let buildsystem = buildsystem.as_deref();
                     match buildsystem {
                         Some("meson") => {
-                            let build_dir = format!("{}/_build", BUILD_DIR);
+                            let build_dir = format!("{BUILD_DIR}/_build");
                             let mut meson_args = vec!["build", &repo_dir, "meson", "setup"];
                             if let Some(config_opts) = config_opts {
                                 meson_args.extend(config_opts.iter().map(|s| s.as_str()));
@@ -157,8 +159,8 @@ impl FlatpakManager {
                             )?;
                         }
                         Some("cmake") | Some("cmake-ninja") => {
-                            let build_dir = format!("{}/_build", BUILD_DIR);
-                            let b_flag = format!("-B{}", build_dir);
+                            let build_dir = format!("{BUILD_DIR}/_build");
+                            let b_flag = format!("-B{build_dir}");
                             let mut cmake_args = vec![
                                 "build",
                                 &repo_dir,
@@ -212,14 +214,14 @@ impl FlatpakManager {
             }
         }
 
-        if let Some(module) = manifest.modules.last() {
-            if let crate::manifest::Module::Object { post_install, .. } = module {
-                if let Some(post_install) = post_install {
-                    for command in post_install {
-                        let args: Vec<&str> = command.split_whitespace().collect();
-                        run_command(args[0], &args[1..])?;
-                    }
-                }
+        if let Some(crate::manifest::Module::Object {
+            post_install: Some(post_install),
+            ..
+        }) = manifest.modules.last()
+        {
+            for command in post_install {
+                let args: Vec<&str> = command.split_whitespace().collect();
+                run_command(args[0], &args[1..])?;
             }
         }
 
@@ -230,7 +232,7 @@ impl FlatpakManager {
         println!("{}", "Building dependencies...".bold());
         let manifest = self.manifest.as_ref().unwrap();
         let manifest_path = self.state.active_manifest.as_ref().unwrap();
-        let repo_dir = format!("{}/repo", BUILD_DIR);
+        let repo_dir = format!("{BUILD_DIR}/repo");
         flatpak_builder(&[
             "--ccache",
             "--force-clean",
@@ -238,7 +240,7 @@ impl FlatpakManager {
             "--disable-download",
             "--build-only",
             "--keep-build-dirs",
-            &format!("--state-dir={}/flatpak-builder", BUILD_DIR),
+            &format!("--state-dir={BUILD_DIR}/flatpak-builder"),
             &format!(
                 "--stop-at={}",
                 match manifest.modules.last().unwrap() {
@@ -261,13 +263,13 @@ impl FlatpakManager {
 
         let manifest = self.manifest.as_ref().unwrap();
         let manifest_path = self.state.active_manifest.as_ref().unwrap();
-        let repo_dir = format!("{}/repo", BUILD_DIR);
+        let repo_dir = format!("{BUILD_DIR}/repo");
         flatpak_builder(&[
             "--ccache",
             "--force-clean",
             "--disable-updates",
             "--download-only",
-            &format!("--state-dir={}/flatpak-builder", BUILD_DIR),
+            &format!("--state-dir={BUILD_DIR}/flatpak-builder"),
             &format!(
                 "--stop-at={}",
                 match manifest.modules.last().unwrap() {
@@ -315,18 +317,8 @@ impl FlatpakManager {
         self.run()
     }
 
-    pub fn stop(&self) -> Result<()> {
-        println!("{}", "Stopping running tasks...".yellow());
-        let output = std::process::Command::new("ps").arg("-ef").output()?;
-        let output = String::from_utf8_lossy(&output.stdout);
-        for line in output.lines() {
-            if line.contains("flatpak-builder") || line.contains("flatpak run") {
-                let mut parts = line.split_whitespace();
-                let pid = parts.nth(1).unwrap();
-                run_command("kill", &["-9", pid])?;
-            }
-        }
-        Ok(())
+    pub fn stop(&mut self) -> Result<()> {
+        kill_process_group(&mut self.state)
     }
 
     pub fn run(&self) -> Result<()> {
@@ -348,7 +340,7 @@ impl FlatpakManager {
         }
 
         let manifest = self.manifest.as_ref().unwrap();
-        let repo_dir = format!("{}/repo", BUILD_DIR);
+        let repo_dir = format!("{BUILD_DIR}/repo");
 
         let mut args = vec![
             "build".to_string(),
@@ -359,7 +351,7 @@ impl FlatpakManager {
         ];
 
         for (key, value) in get_host_env() {
-            args.push(format!("--env={}={}", key, value));
+            args.push(format!("--env={key}={value}"));
         }
 
         for arg in get_a11y_bus_args() {
@@ -413,7 +405,7 @@ impl FlatpakManager {
         }
         let manifest = self.manifest.as_ref().unwrap();
         let _app_id = &manifest.id;
-        let repo_dir = format!("{}/repo", BUILD_DIR);
+        let repo_dir = format!("{BUILD_DIR}/repo");
         run_command("flatpak", &["build", &repo_dir, "bash"])
     }
 
@@ -448,7 +440,7 @@ impl FlatpakManager {
                         return format!("{} {}", "*".green().bold(), path_str);
                     }
                 }
-                format!("  {}", path_str)
+                format!("  {path_str}")
             })
             .collect();
 

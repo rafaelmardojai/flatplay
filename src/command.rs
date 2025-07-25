@@ -19,7 +19,7 @@ fn command_succeeds(cmd: &str, args: &[&str]) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map_or(false, |s| s.success())
+        .is_ok_and(|s| s.success())
 }
 
 // Runs a command, handling Flatpak sandbox and container specifics.
@@ -80,10 +80,10 @@ pub fn run_command(command: &str, args: &[&str]) -> Result<()> {
 // Runs flatpak-builder, preferring the native binary, then the Flatpak app.
 pub fn flatpak_builder(args: &[&str]) -> Result<()> {
     if command_succeeds("flatpak-builder", &["--version"]) {
-        run_command("flatpak-builder", &args)
+        run_command("flatpak-builder", args)
     } else if command_succeeds("flatpak", &["run", "org.flatpak.Builder", "--version"]) {
         let mut new_args = vec!["run", "org.flatpak.Builder"];
-        new_args.extend_from_slice(&args);
+        new_args.extend_from_slice(args);
         run_command("flatpak", &new_args)
     } else {
         Err(anyhow::anyhow!(

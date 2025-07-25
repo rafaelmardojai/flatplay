@@ -1,6 +1,11 @@
 use clap::{CommandFactory, Parser, Subcommand};
 use colored::*;
+use nix::unistd::{getpid, setpgid};
+use std::panic;
+
 use flatplay::FlatpakManager;
+use flatplay::process::{is_process_running, kill_process_group};
+use flatplay::state::State;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -51,8 +56,52 @@ macro_rules! handle_command {
 
 fn main() {
     let cli = Cli::parse();
-    let mut flatpak_manager = FlatpakManager::new().unwrap();
+    let mut state = State::load().unwrap();
 
+    // Special handling for the 'stop' command, which doesn't need the full manager setup.
+    if let Some(Commands::Stop) = cli.command {
+        handle_command!(kill_process_group(&mut state));
+        return;
+    }
+
+    // Check if another instance is already running.
+    if let Some(pgid) = state.process_group_id {
+        if is_process_running(pgid) {
+            eprintln!(
+                "{}: Another instance of flatplay is already running (PID: {}).",
+                "Error".red(),
+                pgid
+            );
+            eprintln!("Run '{}' to terminate it.", "flatplay stop".bold().italic());
+            return;
+        }
+    }
+
+    // Become a process group leader.
+    // This also makes the pid the process group ID.
+    let pid = getpid();
+    if let Err(e) = setpgid(pid, pid) {
+        eprintln!("Failed to set process group ID: {e}");
+        return;
+    }
+
+    // Save the process group ID to the state.
+    state.process_group_id = Some(pid.as_raw() as u32);
+    if let Err(e) = state.save() {
+        eprintln!("Failed to save state: {e}");
+        return;
+    }
+
+    // Handle unclean ends where possible.
+    let original_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |panic_info| {
+        let mut state = State::load().unwrap();
+        state.process_group_id = None;
+        state.save().unwrap();
+        original_hook(panic_info);
+    }));
+
+    let mut flatpak_manager = FlatpakManager::new(state).unwrap();
     match &cli.command {
         Some(Commands::Completions { shell }) => {
             use clap_complete::generate;
@@ -77,4 +126,9 @@ fn main() {
         Some(Commands::SelectManifest) => handle_command!(flatpak_manager.select_manifest()),
         None => handle_command!(flatpak_manager.build_and_run()),
     }
+
+    // Clean up pgid in the state file on normal exit.
+    let mut state = State::load().unwrap();
+    state.process_group_id = None;
+    state.save().unwrap();
 }

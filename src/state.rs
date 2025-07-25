@@ -11,6 +11,7 @@ pub struct State {
     pub dependencies_updated: bool,
     pub dependencies_built: bool,
     pub application_built: bool,
+    pub process_group_id: Option<u32>,
 }
 
 impl State {
@@ -34,5 +35,6 @@ impl State {
         self.dependencies_updated = false;
         self.dependencies_built = false;
         self.application_built = false;
+        self.process_group_id = None;
     }
 }
