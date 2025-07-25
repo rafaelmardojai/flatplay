@@ -4,7 +4,8 @@ use std::env;
 use std::process::Command;
 
 pub fn get_host_env() -> HashMap<String, String> {
-    let forwarded_env_keys = ["COLORTERM",
+    let forwarded_env_keys = [
+        "COLORTERM",
         "DESKTOP_SESSION",
         "LANG",
         "WAYLAND_DISPLAY",
@@ -14,7 +15,8 @@ pub fn get_host_env() -> HashMap<String, String> {
         "XDG_SESSION_ID",
         "XDG_SESSION_TYPE",
         "XDG_VTNR",
-        "AT_SPI_BUS_ADDRESS"];
+        "AT_SPI_BUS_ADDRESS",
+    ];
 
     let mut env_vars = HashMap::new();
 
@@ -60,9 +62,7 @@ pub fn get_a11y_bus_args() -> Vec<String> {
     vec![
         format!("--bind-mount=/run/flatpak/at-spi-bus={}", unix_path),
         if !suffix.is_empty() {
-            format!(
-                "--env=AT_SPI_BUS_ADDRESS=unix:path=/run/flatpak/at-spi-bus{suffix}"
-            )
+            format!("--env=AT_SPI_BUS_ADDRESS=unix:path=/run/flatpak/at-spi-bus{suffix}")
         } else {
             "--env=AT_SPI_BUS_ADDRESS=unix:path=/run/flatpak/at-spi-bus".to_string()
         },
