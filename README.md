@@ -16,12 +16,15 @@ Flatplay relies on the following external commands to be available on your syste
 ## Installation & Usage
 
 ```bash
-# Install into ~/.local/bin (or XDG_BIN_HOME)
-just install
+# Install flatplay using cargo
+cargo install flatplay
+# or if you want to install the latest version from git:
+# cargo install --git https://github.com/mufeedali/flatplay/
 
-# Enable completions (optional, replace with your shell)
+# Optionally, enable completions (replace 'fish' with your shell)
 flatplay completions fish > ~/.config/fish/completions/flatplay.fish
 
+# Run the help command to see available features.
 flatplay --help
 
 # cd into a project directory
