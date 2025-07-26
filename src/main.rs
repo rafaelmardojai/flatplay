@@ -1,11 +1,14 @@
+use std::panic;
+use std::path::PathBuf;
+use std::process::Command;
+
 use clap::{CommandFactory, Parser, Subcommand};
 use colored::*;
 use nix::unistd::{getpid, setpgid};
-use std::panic;
 
+use flatplay::FlatpakManager;
 use flatplay::process::{is_process_running, kill_process_group};
 use flatplay::state::State;
-use flatplay::FlatpakManager;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -32,10 +35,6 @@ enum Commands {
     RuntimeTerminal,
     /// Spawn a new terminal inside the current build repository
     BuildTerminal,
-    /// Show the output terminal of the build and run commands
-    ShowOutputTerminal,
-    /// Show the data directory for the active manifest
-    ShowDataDirectory,
     /// Select or change the active manifest
     SelectManifest,
     /// Generate shell completion scripts for your shell
@@ -54,9 +53,26 @@ macro_rules! handle_command {
     };
 }
 
+fn get_base_dir() -> PathBuf {
+    let output = Command::new("git")
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .output();
+
+    if let Ok(output) = output {
+        if output.status.success() {
+            return PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+        }
+    }
+    std::env::current_dir().unwrap()
+}
+
 fn main() {
+    let base_dir = get_base_dir();
+    let base_dir_for_panic_hook = base_dir.clone();
+    let mut state = State::load(base_dir).unwrap();
+
     let cli = Cli::parse();
-    let mut state = State::load().unwrap();
 
     if let Some(Commands::Stop) = cli.command {
         handle_command!(kill_process_group(&mut state));
@@ -94,7 +110,7 @@ fn main() {
     // Handle unclean ends where possible.
     let original_hook = panic::take_hook();
     panic::set_hook(Box::new(move |panic_info| {
-        if let Ok(mut state) = State::load() {
+        if let Ok(mut state) = State::load(base_dir_for_panic_hook.clone()) {
             state.process_group_id = None;
             if let Err(e) = state.save() {
                 eprintln!("Failed to save state in panic hook: {e}");
@@ -103,7 +119,14 @@ fn main() {
         original_hook(panic_info);
     }));
 
-    let mut flatpak_manager = FlatpakManager::new(&mut state).unwrap();
+    let mut flatpak_manager = match FlatpakManager::new(&mut state) {
+        Ok(manager) => manager,
+        Err(e) => {
+            eprintln!("{}: {}", "Error".red(), e);
+            std::process::exit(1);
+        }
+    };
+
     match &cli.command {
         Some(Commands::Completions { shell }) => {
             use clap_complete::generate;
@@ -121,10 +144,6 @@ fn main() {
         Some(Commands::Clean) => handle_command!(flatpak_manager.clean()),
         Some(Commands::RuntimeTerminal) => handle_command!(flatpak_manager.runtime_terminal()),
         Some(Commands::BuildTerminal) => handle_command!(flatpak_manager.build_terminal()),
-        Some(Commands::ShowOutputTerminal) => {
-            handle_command!(flatpak_manager.show_output_terminal())
-        }
-        Some(Commands::ShowDataDirectory) => handle_command!(flatpak_manager.show_data_directory()),
         Some(Commands::SelectManifest) => handle_command!(flatpak_manager.select_manifest()),
         None => handle_command!(flatpak_manager.build_and_run()),
     }

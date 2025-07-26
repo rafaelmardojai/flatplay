@@ -1,7 +1,15 @@
 [package]
 name = "flatplay"
 version = "0.1.0"
+authors = ["Mufeed Ali <me@mufeed.dev>"]
+description = "Simple CLI tool to build and run Flatpak applications."
+readme = "README.md"
+license = "MIT"
 edition = "2024"
+homepage = "https://github.com/mufeedali/flatplay"
+repository = "https://github.com/mufeedali/flatplay"
+keywords = ["flatpak", "cli", "gnome"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 clap = { version = "4.5.41", features = ["derive"] }

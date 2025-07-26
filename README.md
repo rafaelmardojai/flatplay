@@ -1,6 +1,19 @@
 # Flatplay
 
-Early days.
+Flatplay is a simple CLI tool to build and run Flatpak applications. It's designed to be easy to integrate into your workflows with editors like Zed or neovim.
+
+Note that this is a **work in progress** and you might encounter issues along the way.
+
+## External Dependencies
+
+Flatplay relies on the following external commands to be available on your system:
+
+- `git`
+- `gdbus`
+- `flatpak`
+- `flatpak-builder`
+
+## Installation & Usage
 
 ```bash
 # Install into ~/.local/bin (or XDG_BIN_HOME)
@@ -57,7 +70,7 @@ Add the following tasks to your `tasks.json` file (you can open it with the `zed
 }
 ```
 
-Next, add new bindings to your `keymaps.json` file (you can open it with the `zed: open keypam` action):
+Next, add new bindings to your `keymaps.json` file (you can open it with the `zed: open keymap` action):
 
 ```json
 {
@@ -74,7 +87,7 @@ Then you can run any of the tasks by pressing `Alt-Shift-T`, or use `Ctrl-Alt-B`
 
 # Some notes
 
-- A lot of the code is almost directly borrowed from [`flatpak-vscode`](https://github.com/bilelmoussaoui/flatpak-vscode).
-- Not all features are properly implemented yet. The focus so far has been just on getting something working to conveniently work on [Wordbook](https://github.com/mufeedali/Wordbook) while using anything that's not VS Code.
-- I hope to improve it over time and I hope Bilal forgives me for the sins I've committed here.
+- A lot of the logic is borrowed from [`flatpak-vscode`](https://github.com/bilelmoussaoui/flatpak-vscode).
+- There will be bugs and missing features. Please report them, or better yet, send a PR.
 - I'm not a Rust programmer.
+- I hope to improve it over time and I hope Bilal forgives me for the sins I've committed here.

@@ -1,7 +1,8 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::Path;
 
 fn is_valid_dbus_name(name: &str) -> bool {
     if name.is_empty() || name.len() > 255 {
@@ -77,4 +78,55 @@ impl Manifest {
         }
         Ok(manifest)
     }
+}
+
+/// Recursively finds manifest files in the given path, optionally excluding a prefix subtree.
+/// Returns a sorted Vec of manifest file paths, prioritizing ".Devel." manifests and shallower paths.
+pub fn find_manifests_in_path(path: &Path, exclude_prefix: Option<&Path>) -> Result<Vec<PathBuf>> {
+    use walkdir::WalkDir;
+
+    let mut manifests = vec![];
+
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let exclude_prefix =
+        exclude_prefix.map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()));
+
+    for entry in WalkDir::new(&path)
+        .into_iter()
+        .filter_entry(|e| {
+            if e.depth() == 0 {
+                return true;
+            }
+            if e.file_name().to_str().map_or(false, |s| s.starts_with('.')) {
+                return false;
+            }
+            if let Some(prefix) = &exclude_prefix {
+                if e.path().starts_with(prefix) {
+                    return false;
+                }
+            }
+            true
+        })
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| {
+            matches!(
+                e.path().extension().and_then(|s| s.to_str()),
+                Some("json") | Some("yaml") | Some("yml")
+            )
+        })
+        .filter(|e| Manifest::from_file(e.path()).is_ok())
+    {
+        manifests.push(entry.into_path());
+    }
+
+    manifests.sort_by(|a, b| {
+        let a_is_devel = a.to_str().unwrap().contains(".Devel.");
+        let b_is_devel = b.to_str().unwrap().contains(".Devel.");
+        b_is_devel
+            .cmp(&a_is_devel)
+            .then_with(|| a.components().count().cmp(&b.components().count()))
+    });
+
+    Ok(manifests)
 }

@@ -1,21 +1,20 @@
-pub mod command;
-pub mod manifest;
+mod command;
+mod manifest;
 pub mod process;
 pub mod state;
-pub mod utils;
+mod utils;
+
+use std::fs;
 
 use anyhow::Result;
 use colored::*;
-
 use command::{flatpak_builder, run_command};
-use dialoguer::{theme::ColorfulTheme, Select};
-use manifest::Manifest;
-use state::State;
-use std::fs;
-use utils::{get_a11y_bus_args, get_host_env};
-use walkdir::WalkDir;
+use dialoguer::{Select, theme::ColorfulTheme};
 
+use crate::manifest::{Manifest, Module, find_manifests_in_path};
 use crate::process::kill_process_group;
+use crate::state::State;
+use crate::utils::{get_a11y_bus_args, get_host_env};
 
 const BUILD_DIR: &str = ".flatplay";
 
@@ -28,46 +27,32 @@ use std::path::PathBuf;
 
 impl<'a> FlatpakManager<'a> {
     fn find_manifests(&self) -> Result<Vec<PathBuf>> {
-        let mut manifests = vec![];
-        for entry in WalkDir::new(".")
-            .into_iter()
-            .filter_entry(|e| {
-                let name = e.file_name().to_str().unwrap();
-                // Allow the root directory (".") but skip other dotfiles/dirs
-                name == "." || !name.starts_with('.')
-            })
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file())
-            .filter(|e| {
-                matches!(
-                    e.path().extension().and_then(|s| s.to_str()),
-                    Some("json") | Some("yaml") | Some("yml")
-                )
-            })
-            .filter(|e| Manifest::from_file(e.path()).is_ok())
-        {
-            manifests.push(entry.into_path());
+        let current_dir = std::env::current_dir()?;
+        let current_dir_canon = current_dir.canonicalize()?;
+        let base_dir_canon = self.state.base_dir.canonicalize()?;
+
+        let mut manifests = find_manifests_in_path(&current_dir, Some(&self.state.base_dir))?;
+        if current_dir_canon != base_dir_canon {
+            manifests.extend(find_manifests_in_path(
+                &self.state.base_dir,
+                Some(&current_dir),
+            )?);
         }
-
-        manifests.sort_by(|a, b| {
-            let a_is_devel = a.to_str().unwrap().contains(".Devel.");
-            let b_is_devel = b.to_str().unwrap().contains(".Devel.");
-            b_is_devel
-                .cmp(&a_is_devel)
-                .then_with(|| a.components().count().cmp(&b.components().count()))
-        });
-
+        manifests.dedup();
         Ok(manifests)
     }
 
-    fn auto_select_manifest(&mut self) -> Result<()> {
-        if let Some(manifest_path) = self.find_manifests()?.first() {
+    fn auto_select_manifest(&mut self) -> Result<bool> {
+        let manifests = self.find_manifests()?;
+        if let Some(manifest_path) = manifests.first() {
             self.state.active_manifest = Some(manifest_path.clone());
             self.state.save()?;
             println!("{} {:?}", "Auto-selected manifest:".green(), manifest_path);
             self.manifest = Some(Manifest::from_file(manifest_path)?);
+            Ok(true)
+        } else {
+            Ok(false)
         }
-        Ok(())
     }
 
     pub fn new(state: &'a mut State) -> Result<Self> {
@@ -77,40 +62,43 @@ impl<'a> FlatpakManager<'a> {
             None
         };
         let mut manager = Self { state, manifest };
-        if manager.manifest.is_none() {
-            manager.auto_select_manifest()?;
+        if manager.manifest.is_none() && !manager.auto_select_manifest()? {
+            return Err(anyhow::anyhow!("No manifest found."));
         }
         Ok(manager)
     }
 
+    fn build_dir(&self) -> PathBuf {
+        self.state.base_dir.join(BUILD_DIR)
+    }
+
     fn is_build_initialized(&self) -> Result<bool> {
-        let repo_dir = format!("{BUILD_DIR}/repo");
-        let metadata_file = format!("{repo_dir}/metadata");
-        let files_dir = format!("{repo_dir}/files");
-        let var_dir = format!("{repo_dir}/var");
+        let repo_dir = self.build_dir().join("repo");
+        let metadata_file = repo_dir.join("metadata");
+        let files_dir = repo_dir.join("files");
+        let var_dir = repo_dir.join("var");
 
         // Check if all required directories and files exist
         // From gnome-builder: https://gitlab.gnome.org/GNOME/gnome-builder/-/blob/8579055f5047a0af5462e8a587b0742014d71d64/src/plugins/flatpak/gbp-flatpak-pipeline-addin.c#L220
-        Ok(std::path::Path::new(&metadata_file).is_file()
-            && std::path::Path::new(&files_dir).is_dir()
-            && std::path::Path::new(&var_dir).is_dir())
+        Ok(metadata_file.is_file() && files_dir.is_dir() && var_dir.is_dir())
     }
 
     fn init_build(&self) -> Result<()> {
         let manifest = self.manifest.as_ref().unwrap();
-        let repo_dir = format!("{BUILD_DIR}/repo");
+        let repo_dir = self.build_dir().join("repo");
 
         println!("{}", "Initializing build environment...".bold());
         run_command(
             "flatpak",
             &[
                 "build-init",
-                &repo_dir,
+                repo_dir.to_str().unwrap(),
                 &manifest.id,
                 &manifest.sdk,
                 &manifest.runtime,
                 &manifest.runtime_version,
             ],
+            Some(self.state.base_dir.as_path()),
         )
     }
 
@@ -129,11 +117,12 @@ impl<'a> FlatpakManager<'a> {
 
     fn build_application(&self) -> Result<()> {
         let manifest = self.manifest.as_ref().unwrap();
-        let repo_dir = format!("{BUILD_DIR}/repo");
+        let repo_dir = self.build_dir().join("repo");
+        let repo_dir_str = repo_dir.to_str().unwrap();
 
         if let Some(module) = manifest.modules.last() {
             match module {
-                crate::manifest::Module::Object {
+                Module::Object {
                     buildsystem,
                     config_opts,
                     build_commands,
@@ -142,28 +131,43 @@ impl<'a> FlatpakManager<'a> {
                     let buildsystem = buildsystem.as_deref();
                     match buildsystem {
                         Some("meson") => {
-                            let build_dir = format!("{BUILD_DIR}/_build");
-                            let mut meson_args = vec!["build", &repo_dir, "meson", "setup"];
+                            let build_dir = self.build_dir().join("_build");
+                            let build_dir_str = build_dir.to_str().unwrap();
+                            let mut meson_args = vec!["build", repo_dir_str, "meson", "setup"];
                             if let Some(config_opts) = config_opts {
                                 meson_args.extend(config_opts.iter().map(|s| s.as_str()));
                             }
-                            meson_args.extend(&["--prefix=/app", &build_dir]);
-                            run_command("flatpak", &meson_args)?;
+                            meson_args.extend(&["--prefix=/app", build_dir_str]);
                             run_command(
                                 "flatpak",
-                                &["build", &repo_dir, "ninja", "-C", &build_dir],
+                                &meson_args,
+                                Some(self.state.base_dir.as_path()),
                             )?;
                             run_command(
                                 "flatpak",
-                                &["build", &repo_dir, "meson", "install", "-C", &build_dir],
+                                &["build", repo_dir_str, "ninja", "-C", build_dir_str],
+                                Some(self.state.base_dir.as_path()),
+                            )?;
+                            run_command(
+                                "flatpak",
+                                &[
+                                    "build",
+                                    repo_dir_str,
+                                    "meson",
+                                    "install",
+                                    "-C",
+                                    build_dir_str,
+                                ],
+                                Some(self.state.base_dir.as_path()),
                             )?;
                         }
                         Some("cmake") | Some("cmake-ninja") => {
-                            let build_dir = format!("{BUILD_DIR}/_build");
-                            let b_flag = format!("-B{build_dir}");
+                            let build_dir = self.build_dir().join("_build");
+                            let build_dir_str = build_dir.to_str().unwrap();
+                            let b_flag = format!("-B{build_dir_str}");
                             let mut cmake_args = vec![
                                 "build",
-                                &repo_dir,
+                                repo_dir_str,
                                 "cmake",
                                 "-G",
                                 "Ninja",
@@ -176,52 +180,81 @@ impl<'a> FlatpakManager<'a> {
                                 cmake_args.extend(config_opts.iter().map(|s| s.as_str()));
                             }
                             cmake_args.push(".");
-                            run_command("flatpak", &cmake_args)?;
                             run_command(
                                 "flatpak",
-                                &["build", &repo_dir, "ninja", "-C", &build_dir],
+                                &cmake_args,
+                                Some(self.state.base_dir.as_path()),
                             )?;
                             run_command(
                                 "flatpak",
-                                &["build", &repo_dir, "ninja", "-C", &build_dir, "install"],
+                                &["build", repo_dir_str, "ninja", "-C", build_dir_str],
+                                Some(self.state.base_dir.as_path()),
+                            )?;
+                            run_command(
+                                "flatpak",
+                                &[
+                                    "build",
+                                    repo_dir_str,
+                                    "ninja",
+                                    "-C",
+                                    build_dir_str,
+                                    "install",
+                                ],
+                                Some(self.state.base_dir.as_path()),
                             )?;
                         }
                         Some("simple") => {
                             if let Some(build_commands) = build_commands {
                                 for command in build_commands {
-                                    let mut args = vec!["build", &repo_dir];
+                                    let mut args = vec!["build", repo_dir_str];
                                     args.extend(command.split_whitespace());
-                                    run_command("flatpak", &args)?;
+                                    run_command(
+                                        "flatpak",
+                                        &args,
+                                        Some(self.state.base_dir.as_path()),
+                                    )?;
                                 }
                             }
                         }
                         _ => {
                             // Default to autotools
                             let mut autotools_args =
-                                vec!["build", &repo_dir, "./configure", "--prefix=/app"];
+                                vec!["build", repo_dir_str, "./configure", "--prefix=/app"];
                             if let Some(config_opts) = config_opts {
                                 autotools_args.extend(config_opts.iter().map(|s| s.as_str()));
                             }
-                            run_command("flatpak", &autotools_args)?;
-                            run_command("flatpak", &["build", &repo_dir, "make"])?;
-                            run_command("flatpak", &["build", &repo_dir, "make", "install"])?;
+                            run_command(
+                                "flatpak",
+                                &autotools_args,
+                                Some(self.state.base_dir.as_path()),
+                            )?;
+                            run_command(
+                                "flatpak",
+                                &["build", repo_dir_str, "make"],
+                                Some(self.state.base_dir.as_path()),
+                            )?;
+                            run_command(
+                                "flatpak",
+                                &["build", repo_dir_str, "make", "install"],
+                                Some(self.state.base_dir.as_path()),
+                            )?;
                         }
                     }
                 }
-                crate::manifest::Module::Reference(_) => {
+                Module::Reference(_) => {
                     // Skip string references for build_application
                 }
             }
         }
 
-        if let Some(crate::manifest::Module::Object {
+        if let Some(Module::Object {
             post_install: Some(post_install),
             ..
         }) = manifest.modules.last()
         {
             for command in post_install {
                 let args: Vec<&str> = command.split_whitespace().collect();
-                run_command(args[0], &args[1..])?;
+                run_command(args[0], &args[1..], Some(self.state.base_dir.as_path()))?;
             }
         }
 
@@ -232,25 +265,29 @@ impl<'a> FlatpakManager<'a> {
         println!("{}", "Building dependencies...".bold());
         let manifest = self.manifest.as_ref().unwrap();
         let manifest_path = self.state.active_manifest.as_ref().unwrap();
-        let repo_dir = format!("{BUILD_DIR}/repo");
-        flatpak_builder(&[
-            "--ccache",
-            "--force-clean",
-            "--disable-updates",
-            "--disable-download",
-            "--build-only",
-            "--keep-build-dirs",
-            &format!("--state-dir={BUILD_DIR}/flatpak-builder"),
-            &format!(
-                "--stop-at={}",
-                match manifest.modules.last().unwrap() {
-                    crate::manifest::Module::Object { name, .. } => name,
-                    crate::manifest::Module::Reference(s) => s,
-                }
-            ),
-            &repo_dir,
-            manifest_path.to_str().unwrap(),
-        ])?;
+        let repo_dir = self.build_dir().join("repo");
+        let state_dir = self.build_dir().join("flatpak-builder");
+        flatpak_builder(
+            &[
+                "--ccache",
+                "--force-clean",
+                "--disable-updates",
+                "--disable-download",
+                "--build-only",
+                "--keep-build-dirs",
+                &format!("--state-dir={}", state_dir.to_str().unwrap()),
+                &format!(
+                    "--stop-at={}",
+                    match manifest.modules.last().unwrap() {
+                        Module::Object { name, .. } => name,
+                        Module::Reference(s) => s,
+                    }
+                ),
+                repo_dir.to_str().unwrap(),
+                manifest_path.to_str().unwrap(),
+            ],
+            Some(self.state.base_dir.as_path()),
+        )?;
         self.state.dependencies_built = true;
         self.state.save()
     }
@@ -263,23 +300,27 @@ impl<'a> FlatpakManager<'a> {
 
         let manifest = self.manifest.as_ref().unwrap();
         let manifest_path = self.state.active_manifest.as_ref().unwrap();
-        let repo_dir = format!("{BUILD_DIR}/repo");
-        flatpak_builder(&[
-            "--ccache",
-            "--force-clean",
-            "--disable-updates",
-            "--download-only",
-            &format!("--state-dir={BUILD_DIR}/flatpak-builder"),
-            &format!(
-                "--stop-at={}",
-                match manifest.modules.last().unwrap() {
-                    crate::manifest::Module::Object { name, .. } => name,
-                    crate::manifest::Module::Reference(s) => s,
-                }
-            ),
-            &repo_dir,
-            manifest_path.to_str().unwrap(),
-        ])?;
+        let repo_dir = self.build_dir().join("repo");
+        let state_dir = self.build_dir().join("flatpak-builder");
+        flatpak_builder(
+            &[
+                "--ccache",
+                "--force-clean",
+                "--disable-updates",
+                "--download-only",
+                &format!("--state-dir={}", state_dir.to_str().unwrap()),
+                &format!(
+                    "--stop-at={}",
+                    match manifest.modules.last().unwrap() {
+                        Module::Object { name, .. } => name,
+                        Module::Reference(s) => s,
+                    }
+                ),
+                repo_dir.to_str().unwrap(),
+                manifest_path.to_str().unwrap(),
+            ],
+            Some(self.state.base_dir.as_path()),
+        )?;
         self.state.dependencies_updated = true;
         self.state.save()
     }
@@ -340,7 +381,7 @@ impl<'a> FlatpakManager<'a> {
         }
 
         let manifest = self.manifest.as_ref().unwrap();
-        let repo_dir = format!("{BUILD_DIR}/repo");
+        let repo_dir = self.build_dir().join("repo");
 
         let mut args = vec![
             "build".to_string(),
@@ -361,7 +402,7 @@ impl<'a> FlatpakManager<'a> {
         for arg in &manifest.finish_args {
             args.push(arg.clone());
         }
-        args.push(repo_dir);
+        args.push(repo_dir.to_str().unwrap().to_string());
         args.push(manifest.command.clone());
         if let Some(x_run_args) = &manifest.x_run_args {
             for arg in x_run_args {
@@ -371,13 +412,14 @@ impl<'a> FlatpakManager<'a> {
 
         let args_str: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
-        run_command("flatpak", &args_str)
+        run_command("flatpak", &args_str, Some(self.state.base_dir.as_path()))
     }
 
     pub fn clean(&mut self) -> Result<()> {
-        if fs::metadata(BUILD_DIR).is_ok() {
-            fs::remove_dir_all(BUILD_DIR)?;
-            println!("{}", "Cleaned .flatplay directory.".green());
+        let build_dir = self.build_dir();
+        if fs::metadata(&build_dir).is_ok() {
+            fs::remove_dir_all(&build_dir)?;
+            println!("{} Cleaned .flatplay directory.", "✔".green());
         }
         Ok(())
     }
@@ -392,7 +434,11 @@ impl<'a> FlatpakManager<'a> {
         }
         let manifest = self.manifest.as_ref().unwrap();
         let sdk_id = format!("{}//{}", manifest.sdk, manifest.runtime_version);
-        run_command("flatpak", &["run", "--command=bash", &sdk_id])
+        run_command(
+            "flatpak",
+            &["run", "--command=bash", &sdk_id],
+            Some(self.state.base_dir.as_path()),
+        )
     }
 
     pub fn build_terminal(&self) -> Result<()> {
@@ -405,18 +451,12 @@ impl<'a> FlatpakManager<'a> {
         }
         let manifest = self.manifest.as_ref().unwrap();
         let _app_id = &manifest.id;
-        let repo_dir = format!("{BUILD_DIR}/repo");
-        run_command("flatpak", &["build", &repo_dir, "bash"])
-    }
-
-    pub fn show_output_terminal(&self) -> Result<()> {
-        println!("{}", "Showing output terminal...".bold());
-        Ok(())
-    }
-
-    pub fn show_data_directory(&self) -> Result<()> {
-        println!("{}", "Showing data directory...".bold());
-        Ok(())
+        let repo_dir = self.build_dir().join("repo");
+        run_command(
+            "flatpak",
+            &["build", repo_dir.to_str().unwrap(), "bash"],
+            Some(self.state.base_dir.as_path()),
+        )
     }
 
     pub fn select_manifest(&mut self) -> Result<()> {

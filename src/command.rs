@@ -1,6 +1,7 @@
+use std::process::{Command, Stdio};
+
 use anyhow::Result;
 use colored::*;
-use std::process::{Command, Stdio};
 
 // Returns true if running inside a Flatpak sandbox.
 fn is_sandboxed() -> bool {
@@ -23,7 +24,11 @@ fn command_succeeds(cmd: &str, args: &[&str]) -> bool {
 }
 
 // Runs a command, handling Flatpak sandbox and container specifics.
-pub fn run_command(command: &str, args: &[&str]) -> Result<()> {
+pub fn run_command(
+    command: &str,
+    args: &[&str],
+    working_dir: Option<&std::path::Path>,
+) -> Result<()> {
     let mut command_args = args.to_vec();
 
     // Workaround for rofiles-fuse issues in containers.
@@ -59,11 +64,14 @@ pub fn run_command(command: &str, args: &[&str]) -> Result<()> {
         program.italic(),
         final_args.join(" ").italic()
     );
-    let mut command_process = Command::new(program)
-        .args(&final_args)
+    let mut cmd = Command::new(program);
+    cmd.args(&final_args)
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()?;
+        .stderr(Stdio::inherit());
+    if let Some(dir) = working_dir {
+        cmd.current_dir(dir);
+    }
+    let mut command_process = cmd.spawn()?;
 
     let status = command_process.wait()?;
 
@@ -78,13 +86,13 @@ pub fn run_command(command: &str, args: &[&str]) -> Result<()> {
 }
 
 // Runs flatpak-builder, preferring the native binary, then the Flatpak app.
-pub fn flatpak_builder(args: &[&str]) -> Result<()> {
+pub fn flatpak_builder(args: &[&str], working_dir: Option<&std::path::Path>) -> Result<()> {
     if command_succeeds("flatpak-builder", &["--version"]) {
-        run_command("flatpak-builder", args)
+        run_command("flatpak-builder", args, working_dir)
     } else if command_succeeds("flatpak", &["run", "org.flatpak.Builder", "--version"]) {
         let mut new_args = vec!["run", "org.flatpak.Builder"];
         new_args.extend_from_slice(args);
-        run_command("flatpak", &new_args)
+        run_command("flatpak", &new_args, working_dir)
     } else {
         Err(anyhow::anyhow!(
             "Flatpak builder not found. Please install either `flatpak-builder` from your distro repositories or `org.flatpak.Builder` through `flatpak install`."
