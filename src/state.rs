@@ -59,10 +59,11 @@ impl State {
         Ok(())
     }
 
+    /// Resets the state to its initial values.
+    /// This is specifically only for build progress. Not general state.
     pub fn reset(&mut self) {
         self.dependencies_updated = false;
         self.dependencies_built = false;
         self.application_built = false;
-        self.process_group_id = None;
     }
 }

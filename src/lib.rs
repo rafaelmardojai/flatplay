@@ -420,6 +420,7 @@ impl<'a> FlatpakManager<'a> {
         if fs::metadata(&build_dir).is_ok() {
             fs::remove_dir_all(&build_dir)?;
             println!("{} Cleaned .flatplay directory.", "✔".green());
+            self.state.reset();
         }
         Ok(())
     }
