@@ -31,7 +31,7 @@ impl<'a> FlatpakManager<'a> {
         let current_dir_canon = current_dir.canonicalize()?;
         let base_dir_canon = self.state.base_dir.canonicalize()?;
 
-        let mut manifests = find_manifests_in_path(&current_dir, Some(&self.state.base_dir))?;
+        let mut manifests = find_manifests_in_path(&current_dir, None)?;
         if current_dir_canon != base_dir_canon {
             manifests.extend(find_manifests_in_path(
                 &self.state.base_dir,
@@ -459,7 +459,24 @@ impl<'a> FlatpakManager<'a> {
         )
     }
 
-    pub fn select_manifest(&mut self) -> Result<()> {
+    /// Manifest selection command endpoint.
+    pub fn select_manifest(&mut self, path: Option<PathBuf>) -> Result<()> {
+        if let Some(path) = path {
+            let manifest_path = if path.is_absolute() {
+                path
+            } else {
+                self.state.base_dir.join(&path)
+            };
+            if !manifest_path.exists() {
+                return Err(anyhow::anyhow!(
+                    "Manifest file not found at {:?}",
+                    manifest_path
+                ));
+            }
+            let manifest = Manifest::from_file(&manifest_path)?;
+            return self.set_active_manifest(manifest_path, Some(manifest));
+        }
+
         println!("{}", "Searching for manifest files...".bold());
         let manifests = self.find_manifests()?;
 
@@ -491,13 +508,25 @@ impl<'a> FlatpakManager<'a> {
             .default(default_selection)
             .interact()?;
 
-        self.state.active_manifest = Some(manifests[selection].clone());
-        self.state.save()?;
+        self.set_active_manifest(manifests[selection].clone(), None)
+    }
 
+    /// Sets the active manifest and updates the state.
+    fn set_active_manifest(
+        &mut self,
+        manifest_path: PathBuf,
+        manifest: Option<Manifest>,
+    ) -> Result<()> {
+        self.state.active_manifest = Some(manifest_path.clone());
+        self.state.save()?;
+        if let Some(manifest) = manifest {
+            self.manifest = Some(manifest);
+        }
         println!(
-            "{} {:?}",
+            "{} {:?}. You can now run `{}`.",
             "Selected manifest:".green(),
-            manifests[selection]
+            manifest_path,
+            "flatplay".bold().italic(),
         );
 
         Ok(())

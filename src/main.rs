@@ -36,7 +36,10 @@ enum Commands {
     /// Spawn a new terminal inside the current build repository
     BuildTerminal,
     /// Select or change the active manifest
-    SelectManifest,
+    SelectManifest {
+        /// Path to the manifest file to select
+        path: Option<PathBuf>,
+    },
     /// Generate shell completion scripts for your shell
     Completions {
         /// The shell to generate completions for (e.g., bash, zsh, fish)
@@ -151,7 +154,9 @@ fn main() {
         Some(Commands::Clean) => handle_command!(flatpak_manager.clean()),
         Some(Commands::RuntimeTerminal) => handle_command!(flatpak_manager.runtime_terminal()),
         Some(Commands::BuildTerminal) => handle_command!(flatpak_manager.build_terminal()),
-        Some(Commands::SelectManifest) => handle_command!(flatpak_manager.select_manifest()),
+        Some(Commands::SelectManifest { path }) => {
+            handle_command!(flatpak_manager.select_manifest(path.clone()))
+        }
         None => handle_command!(flatpak_manager.build_and_run()),
     }
 
