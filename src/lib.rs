@@ -518,8 +518,15 @@ impl<'a> FlatpakManager<'a> {
         manifest_path: PathBuf,
         manifest: Option<Manifest>,
     ) -> Result<()> {
-        self.state.active_manifest = Some(manifest_path.clone());
-        self.state.save()?;
+        let should_clean = self.state.active_manifest.as_ref() != Some(&manifest_path);
+        if should_clean {
+            // Clean build directory and progress since manifest has changed.
+            self.clean()?;
+
+            // Change active manifest in state.
+            self.state.active_manifest = Some(manifest_path.clone());
+            self.state.save()?;
+        }
         if let Some(manifest) = manifest {
             self.manifest = Some(manifest);
         }
