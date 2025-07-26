@@ -68,12 +68,22 @@ fn get_base_dir() -> PathBuf {
 }
 
 fn main() {
+    let cli = Cli::parse();
+
+    // Handle shell completions first.
+    if let Some(Commands::Completions { shell }) = cli.command {
+        use clap_complete::generate;
+        use std::io;
+        let mut cmd = Cli::command();
+        generate(shell, &mut cmd, "flatplay", &mut io::stdout());
+        return;
+    }
+
     let base_dir = get_base_dir();
     let base_dir_for_panic_hook = base_dir.clone();
     let mut state = State::load(base_dir).unwrap();
 
-    let cli = Cli::parse();
-
+    // Handle the "stop" command early.
     if let Some(Commands::Stop) = cli.command {
         handle_command!(kill_process_group(&mut state));
         return;
@@ -128,15 +138,12 @@ fn main() {
     };
 
     match &cli.command {
-        Some(Commands::Completions { shell }) => {
-            use clap_complete::generate;
-            use std::io;
-            let mut cmd = Cli::command();
-            generate(*shell, &mut cmd, "flatplay", &mut io::stdout());
-        }
+        // Handled earlier.
+        Some(Commands::Completions { shell: _ }) => {}
+        Some(Commands::Stop) => {}
+
         Some(Commands::Build) => handle_command!(flatpak_manager.build()),
         Some(Commands::BuildAndRun) => handle_command!(flatpak_manager.build_and_run()),
-        Some(Commands::Stop) => handle_command!(flatpak_manager.stop()),
         Some(Commands::Run) => handle_command!(flatpak_manager.run()),
         Some(Commands::UpdateDependencies) => {
             handle_command!(flatpak_manager.update_dependencies())
