@@ -19,14 +19,14 @@ use crate::process::kill_process_group;
 
 const BUILD_DIR: &str = ".flatplay";
 
-pub struct FlatpakManager {
-    state: State,
+pub struct FlatpakManager<'a> {
+    state: &'a mut State,
     manifest: Option<Manifest>,
 }
 
 use std::path::PathBuf;
 
-impl FlatpakManager {
+impl<'a> FlatpakManager<'a> {
     fn find_manifests(&self) -> Result<Vec<PathBuf>> {
         let mut manifests = vec![];
         for entry in WalkDir::new(".")
@@ -70,7 +70,7 @@ impl FlatpakManager {
         Ok(())
     }
 
-    pub fn new(state: State) -> Result<Self> {
+    pub fn new(state: &'a mut State) -> Result<Self> {
         let manifest = if let Some(path) = &state.active_manifest {
             Some(Manifest::from_file(path)?)
         } else {
@@ -318,7 +318,7 @@ impl FlatpakManager {
     }
 
     pub fn stop(&mut self) -> Result<()> {
-        kill_process_group(&mut self.state)
+        kill_process_group(self.state)
     }
 
     pub fn run(&self) -> Result<()> {

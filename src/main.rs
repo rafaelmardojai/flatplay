@@ -58,7 +58,6 @@ fn main() {
     let cli = Cli::parse();
     let mut state = State::load().unwrap();
 
-    // Special handling for the 'stop' command, which doesn't need the full manager setup.
     if let Some(Commands::Stop) = cli.command {
         handle_command!(kill_process_group(&mut state));
         return;
@@ -95,13 +94,16 @@ fn main() {
     // Handle unclean ends where possible.
     let original_hook = panic::take_hook();
     panic::set_hook(Box::new(move |panic_info| {
-        let mut state = State::load().unwrap();
-        state.process_group_id = None;
-        state.save().unwrap();
+        if let Ok(mut state) = State::load() {
+            state.process_group_id = None;
+            if let Err(e) = state.save() {
+                eprintln!("Failed to save state in panic hook: {e}");
+            }
+        }
         original_hook(panic_info);
     }));
 
-    let mut flatpak_manager = FlatpakManager::new(state).unwrap();
+    let mut flatpak_manager = FlatpakManager::new(&mut state).unwrap();
     match &cli.command {
         Some(Commands::Completions { shell }) => {
             use clap_complete::generate;
@@ -128,7 +130,6 @@ fn main() {
     }
 
     // Clean up pgid in the state file on normal exit.
-    let mut state = State::load().unwrap();
     state.process_group_id = None;
     state.save().unwrap();
 }
