@@ -127,120 +127,14 @@ impl<'a> FlatpakManager<'a> {
                     config_opts,
                     build_commands,
                     ..
-                } => {
-                    let buildsystem = buildsystem.as_deref();
-                    match buildsystem {
-                        Some("meson") => {
-                            let build_dir = self.build_dir().join("_build");
-                            let build_dir_str = build_dir.to_str().unwrap();
-                            let mut meson_args = vec!["build", repo_dir_str, "meson", "setup"];
-                            if let Some(config_opts) = config_opts {
-                                meson_args.extend(config_opts.iter().map(|s| s.as_str()));
-                            }
-                            meson_args.extend(&["--prefix=/app", build_dir_str]);
-                            run_command(
-                                "flatpak",
-                                &meson_args,
-                                Some(self.state.base_dir.as_path()),
-                            )?;
-                            run_command(
-                                "flatpak",
-                                &["build", repo_dir_str, "ninja", "-C", build_dir_str],
-                                Some(self.state.base_dir.as_path()),
-                            )?;
-                            run_command(
-                                "flatpak",
-                                &[
-                                    "build",
-                                    repo_dir_str,
-                                    "meson",
-                                    "install",
-                                    "-C",
-                                    build_dir_str,
-                                ],
-                                Some(self.state.base_dir.as_path()),
-                            )?;
-                        }
-                        Some("cmake") | Some("cmake-ninja") => {
-                            let build_dir = self.build_dir().join("_build");
-                            let build_dir_str = build_dir.to_str().unwrap();
-                            let b_flag = format!("-B{build_dir_str}");
-                            let mut cmake_args = vec![
-                                "build",
-                                repo_dir_str,
-                                "cmake",
-                                "-G",
-                                "Ninja",
-                                &b_flag,
-                                "-DCMAKE_EXPORT_COMPILE_COMMANDS=1",
-                                "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
-                                "-DCMAKE_INSTALL_PREFIX=/app",
-                            ];
-                            if let Some(config_opts) = config_opts {
-                                cmake_args.extend(config_opts.iter().map(|s| s.as_str()));
-                            }
-                            cmake_args.push(".");
-                            run_command(
-                                "flatpak",
-                                &cmake_args,
-                                Some(self.state.base_dir.as_path()),
-                            )?;
-                            run_command(
-                                "flatpak",
-                                &["build", repo_dir_str, "ninja", "-C", build_dir_str],
-                                Some(self.state.base_dir.as_path()),
-                            )?;
-                            run_command(
-                                "flatpak",
-                                &[
-                                    "build",
-                                    repo_dir_str,
-                                    "ninja",
-                                    "-C",
-                                    build_dir_str,
-                                    "install",
-                                ],
-                                Some(self.state.base_dir.as_path()),
-                            )?;
-                        }
-                        Some("simple") => {
-                            if let Some(build_commands) = build_commands {
-                                for command in build_commands {
-                                    let mut args = vec!["build", repo_dir_str];
-                                    args.extend(command.split_whitespace());
-                                    run_command(
-                                        "flatpak",
-                                        &args,
-                                        Some(self.state.base_dir.as_path()),
-                                    )?;
-                                }
-                            }
-                        }
-                        _ => {
-                            // Default to autotools
-                            let mut autotools_args =
-                                vec!["build", repo_dir_str, "./configure", "--prefix=/app"];
-                            if let Some(config_opts) = config_opts {
-                                autotools_args.extend(config_opts.iter().map(|s| s.as_str()));
-                            }
-                            run_command(
-                                "flatpak",
-                                &autotools_args,
-                                Some(self.state.base_dir.as_path()),
-                            )?;
-                            run_command(
-                                "flatpak",
-                                &["build", repo_dir_str, "make"],
-                                Some(self.state.base_dir.as_path()),
-                            )?;
-                            run_command(
-                                "flatpak",
-                                &["build", repo_dir_str, "make", "install"],
-                                Some(self.state.base_dir.as_path()),
-                            )?;
-                        }
+                } => match buildsystem.as_deref() {
+                    Some("meson") => self.run_meson(repo_dir_str, config_opts.as_ref())?,
+                    Some("cmake") | Some("cmake-ninja") => {
+                        self.run_cmake(repo_dir_str, config_opts.as_ref())?
                     }
-                }
+                    Some("simple") => self.run_simple(repo_dir_str, build_commands.as_ref())?,
+                    _ => self.run_autotools(repo_dir_str, config_opts.as_ref())?,
+                },
                 Module::Reference(_) => {
                     // Skip string references for build_application
                 }
@@ -259,6 +153,106 @@ impl<'a> FlatpakManager<'a> {
         }
 
         Ok(())
+    }
+
+    fn run_meson(&self, repo_dir_str: &str, config_opts: Option<&Vec<String>>) -> Result<()> {
+        let build_dir = self.build_dir().join("_build");
+        let build_dir_str = build_dir.to_str().unwrap();
+        let mut meson_args = vec!["build", repo_dir_str, "meson", "setup"];
+        if let Some(opts) = config_opts {
+            meson_args.extend(opts.iter().map(|s| s.as_str()));
+        }
+        meson_args.extend(&["--prefix=/app", build_dir_str]);
+        run_command("flatpak", &meson_args, Some(self.state.base_dir.as_path()))?;
+        run_command(
+            "flatpak",
+            &["build", repo_dir_str, "ninja", "-C", build_dir_str],
+            Some(self.state.base_dir.as_path()),
+        )?;
+        run_command(
+            "flatpak",
+            &[
+                "build",
+                repo_dir_str,
+                "meson",
+                "install",
+                "-C",
+                build_dir_str,
+            ],
+            Some(self.state.base_dir.as_path()),
+        )
+    }
+
+    fn run_cmake(&self, repo_dir_str: &str, config_opts: Option<&Vec<String>>) -> Result<()> {
+        let build_dir = self.build_dir().join("_build");
+        let build_dir_str = build_dir.to_str().unwrap();
+        let b_flag = format!("-B{build_dir_str}");
+        let mut cmake_args = vec![
+            "build",
+            repo_dir_str,
+            "cmake",
+            "-G",
+            "Ninja",
+            &b_flag,
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=1",
+            "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+            "-DCMAKE_INSTALL_PREFIX=/app",
+        ];
+        if let Some(opts) = config_opts {
+            cmake_args.extend(opts.iter().map(|s| s.as_str()));
+        }
+        cmake_args.push(".");
+        run_command("flatpak", &cmake_args, Some(self.state.base_dir.as_path()))?;
+        run_command(
+            "flatpak",
+            &["build", repo_dir_str, "ninja", "-C", build_dir_str],
+            Some(self.state.base_dir.as_path()),
+        )?;
+        run_command(
+            "flatpak",
+            &[
+                "build",
+                repo_dir_str,
+                "ninja",
+                "-C",
+                build_dir_str,
+                "install",
+            ],
+            Some(self.state.base_dir.as_path()),
+        )
+    }
+
+    fn run_simple(&self, repo_dir_str: &str, build_commands: Option<&Vec<String>>) -> Result<()> {
+        if let Some(commands) = build_commands {
+            for command in commands {
+                let mut args = vec!["build", repo_dir_str];
+                args.extend(command.split_whitespace());
+                run_command("flatpak", &args, Some(self.state.base_dir.as_path()))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn run_autotools(&self, repo_dir_str: &str, config_opts: Option<&Vec<String>>) -> Result<()> {
+        let mut autotools_args = vec!["build", repo_dir_str, "./configure", "--prefix=/app"];
+        if let Some(opts) = config_opts {
+            autotools_args.extend(opts.iter().map(|s| s.as_str()));
+        }
+        run_command(
+            "flatpak",
+            &autotools_args,
+            Some(self.state.base_dir.as_path()),
+        )?;
+        run_command(
+            "flatpak",
+            &["build", repo_dir_str, "make"],
+            Some(self.state.base_dir.as_path()),
+        )?;
+        run_command(
+            "flatpak",
+            &["build", repo_dir_str, "make", "install"],
+            Some(self.state.base_dir.as_path()),
+        )
     }
 
     fn build_dependencies(&mut self) -> Result<()> {
