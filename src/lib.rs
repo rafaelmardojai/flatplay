@@ -1,3 +1,4 @@
+mod build_dirs;
 mod command;
 mod manifest;
 pub mod process;
@@ -5,25 +6,24 @@ pub mod state;
 mod utils;
 
 use std::fs;
+use std::path::PathBuf;
 
 use anyhow::Result;
 use colored::*;
 use command::{flatpak_builder, run_command};
-use dialoguer::{Select, theme::ColorfulTheme};
+use dialoguer::{theme::ColorfulTheme, Select};
 
-use crate::manifest::{Manifest, Module, find_manifests_in_path};
+use crate::build_dirs::BuildDirs;
+use crate::manifest::{find_manifests_in_path, Manifest, Module};
 use crate::process::kill_process_group;
 use crate::state::State;
 use crate::utils::{get_a11y_bus_args, get_host_env};
 
-const BUILD_DIR: &str = ".flatplay";
-
 pub struct FlatpakManager<'a> {
     state: &'a mut State,
     manifest: Option<Manifest>,
+    build_dirs: BuildDirs,
 }
-
-use std::path::PathBuf;
 
 impl<'a> FlatpakManager<'a> {
     fn find_manifests(&self) -> Result<Vec<PathBuf>> {
@@ -61,7 +61,12 @@ impl<'a> FlatpakManager<'a> {
         } else {
             None
         };
-        let mut manager = Self { state, manifest };
+        let build_dirs = BuildDirs::new(state.base_dir.clone());
+        let mut manager = Self {
+            state,
+            manifest,
+            build_dirs,
+        };
         if manager.manifest.is_none() && !manager.auto_select_manifest()? {
             return Err(anyhow::anyhow!("No manifest found."));
         }
@@ -69,15 +74,10 @@ impl<'a> FlatpakManager<'a> {
         Ok(manager)
     }
 
-    fn build_dir(&self) -> PathBuf {
-        self.state.base_dir.join(BUILD_DIR)
-    }
-
     fn is_build_initialized(&self) -> Result<bool> {
-        let repo_dir = self.build_dir().join("repo");
-        let metadata_file = repo_dir.join("metadata");
-        let files_dir = repo_dir.join("files");
-        let var_dir = repo_dir.join("var");
+        let metadata_file = self.build_dirs.metadata_file();
+        let files_dir = self.build_dirs.files_dir();
+        let var_dir = self.build_dirs.var_dir();
 
         // Check if all required directories and files exist
         // From gnome-builder: https://gitlab.gnome.org/GNOME/gnome-builder/-/blob/8579055f5047a0af5462e8a587b0742014d71d64/src/plugins/flatpak/gbp-flatpak-pipeline-addin.c#L220
@@ -86,7 +86,7 @@ impl<'a> FlatpakManager<'a> {
 
     fn init_build(&self) -> Result<()> {
         let manifest = self.manifest.as_ref().unwrap();
-        let repo_dir = self.build_dir().join("repo");
+        let repo_dir = self.build_dirs.repo_dir();
 
         println!("{}", "Initializing build environment...".bold());
         run_command(
@@ -118,7 +118,7 @@ impl<'a> FlatpakManager<'a> {
 
     fn build_application(&self) -> Result<()> {
         let manifest = self.manifest.as_ref().unwrap();
-        let repo_dir = self.build_dir().join("repo");
+        let repo_dir = self.build_dirs.repo_dir();
         let repo_dir_str = repo_dir.to_str().unwrap();
 
         if let Some(module) = manifest.modules.last() {
@@ -155,7 +155,7 @@ impl<'a> FlatpakManager<'a> {
     }
 
     fn run_meson(&self, repo_dir_str: &str, config_opts: Option<&Vec<String>>) -> Result<()> {
-        let build_dir = self.build_dir().join("_build");
+        let build_dir = self.build_dirs.build_subdir();
         let build_dir_str = build_dir.to_str().unwrap();
         let mut meson_args = vec!["build", repo_dir_str, "meson", "setup"];
         if let Some(opts) = config_opts {
@@ -183,7 +183,7 @@ impl<'a> FlatpakManager<'a> {
     }
 
     fn run_cmake(&self, repo_dir_str: &str, config_opts: Option<&Vec<String>>) -> Result<()> {
-        let build_dir = self.build_dir().join("_build");
+        let build_dir = self.build_dirs.build_subdir();
         let build_dir_str = build_dir.to_str().unwrap();
         let b_flag = format!("-B{build_dir_str}");
         let mut cmake_args = vec![
@@ -258,8 +258,8 @@ impl<'a> FlatpakManager<'a> {
         println!("{}", "Building dependencies...".bold());
         let manifest = self.manifest.as_ref().unwrap();
         let manifest_path = self.state.active_manifest.as_ref().unwrap();
-        let repo_dir = self.build_dir().join("repo");
-        let state_dir = self.build_dir().join("flatpak-builder");
+        let repo_dir = self.build_dirs.repo_dir();
+        let state_dir = self.build_dirs.flatpak_builder_dir();
         flatpak_builder(
             &[
                 "--ccache",
@@ -290,8 +290,8 @@ impl<'a> FlatpakManager<'a> {
 
         let manifest = self.manifest.as_ref().unwrap();
         let manifest_path = self.state.active_manifest.as_ref().unwrap();
-        let repo_dir = self.build_dir().join("repo");
-        let state_dir = self.build_dir().join("flatpak-builder");
+        let repo_dir = self.build_dirs.repo_dir();
+        let state_dir = self.build_dirs.flatpak_builder_dir();
         flatpak_builder(
             &[
                 "--ccache",
@@ -352,9 +352,8 @@ impl<'a> FlatpakManager<'a> {
             );
             return Ok(());
         }
-
         let manifest = self.manifest.as_ref().unwrap();
-        let repo_dir = self.build_dir().join("repo");
+        let repo_dir = self.build_dirs.repo_dir();
 
         let mut args: Vec<String> = [
             "build",
@@ -395,11 +394,10 @@ impl<'a> FlatpakManager<'a> {
             );
             return Ok(());
         }
-
         let manifest = self.manifest.as_ref().unwrap();
-        let repo_dir = self.build_dir().join("repo");
-        let finalized_repo_dir = self.build_dir().join("finalized-repo");
-        let ostree_dir = self.build_dir().join("ostree");
+        let repo_dir = self.build_dirs.repo_dir();
+        let finalized_repo_dir = self.build_dirs.finalized_repo_dir();
+        let ostree_dir = self.build_dirs.ostree_dir();
 
         // Remove finalized repo
         if finalized_repo_dir.is_dir() {
@@ -453,7 +451,7 @@ impl<'a> FlatpakManager<'a> {
     }
 
     pub fn clean(&mut self) -> Result<()> {
-        let build_dir = self.build_dir();
+        let build_dir = self.build_dirs.build_dir();
         if fs::metadata(&build_dir).is_ok() {
             fs::remove_dir_all(&build_dir)?;
             println!("{} Cleaned .flatplay directory.", "✔".green());
@@ -489,7 +487,7 @@ impl<'a> FlatpakManager<'a> {
         }
         let manifest = self.manifest.as_ref().unwrap();
         let _app_id = &manifest.id;
-        let repo_dir = self.build_dir().join("repo");
+        let repo_dir = self.build_dirs.repo_dir();
         run_command(
             "flatpak",
             &["build", repo_dir.to_str().unwrap(), "bash"],

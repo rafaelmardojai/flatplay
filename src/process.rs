@@ -1,7 +1,7 @@
 use anyhow::Result;
 use colored::*;
 use nix::errno::Errno;
-use nix::sys::signal::{Signal, kill};
+use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 
 use crate::state::State;
