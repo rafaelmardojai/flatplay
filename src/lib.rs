@@ -65,6 +65,7 @@ impl<'a> FlatpakManager<'a> {
         if manager.manifest.is_none() && !manager.auto_select_manifest()? {
             return Err(anyhow::anyhow!("No manifest found."));
         }
+        manager.init()?;
         Ok(manager)
     }
 
@@ -102,7 +103,7 @@ impl<'a> FlatpakManager<'a> {
         )
     }
 
-    fn ensure_initialized_build(&mut self) -> Result<()> {
+    pub fn init(&mut self) -> Result<()> {
         if self.is_build_initialized()? {
             println!(
                 "{}",
@@ -287,9 +288,6 @@ impl<'a> FlatpakManager<'a> {
     pub fn update_dependencies(&mut self) -> Result<()> {
         println!("{}", "Updating dependencies...".bold());
 
-        // Ensure build is initialized before updating dependencies
-        self.ensure_initialized_build()?;
-
         let manifest = self.manifest.as_ref().unwrap();
         let manifest_path = self.state.active_manifest.as_ref().unwrap();
         let repo_dir = self.build_dir().join("repo");
@@ -326,21 +324,13 @@ impl<'a> FlatpakManager<'a> {
             return Ok(());
         }
 
-        // Ensure build is initialized before proceeding
-        self.ensure_initialized_build()?;
-
         if !self.state.dependencies_updated {
             self.update_dependencies()?;
         }
         if !self.state.dependencies_built {
             self.build_dependencies()?;
         }
-        if self.state.application_built {
-            // TODO: Implement rebuild
-            self.build_application()?;
-        } else {
-            self.build_application()?;
-        }
+        self.build_application()?;
         self.state.application_built = true;
         self.state.save()
     }
@@ -359,15 +349,6 @@ impl<'a> FlatpakManager<'a> {
             println!(
                 "{}",
                 "Application not built. Please run `build` first.".yellow()
-            );
-            return Ok(());
-        }
-
-        // Check if build is initialized
-        if !self.is_build_initialized()? {
-            println!(
-                "{}",
-                "Build not initialized. Please run `build` first.".yellow()
             );
             return Ok(());
         }
@@ -411,15 +392,6 @@ impl<'a> FlatpakManager<'a> {
             println!(
                 "{}",
                 "Application not built. Please run `build` first.".yellow()
-            );
-            return Ok(());
-        }
-
-        // Check if build is initialized
-        if !self.is_build_initialized()? {
-            println!(
-                "{}",
-                "Build not initialized. Please run `build` first.".yellow()
             );
             return Ok(());
         }
