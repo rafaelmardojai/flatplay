@@ -69,7 +69,7 @@ fn get_base_dir() -> PathBuf {
             return PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
         }
     }
-    std::env::current_dir().unwrap()
+    PathBuf::from(".")
 }
 
 fn main() {

@@ -97,7 +97,7 @@ pub fn find_manifests_in_path(path: &Path, exclude_prefix: Option<&Path>) -> Res
             if e.depth() == 0 {
                 return true;
             }
-            if e.file_name().to_str().map_or(false, |s| s.starts_with('.')) {
+            if e.file_name().to_str().is_some_and(|s| s.starts_with('.')) {
                 return false;
             }
             if let Some(prefix) = &exclude_prefix {

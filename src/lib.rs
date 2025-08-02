@@ -126,29 +126,27 @@ impl<'a> FlatpakManager<'a> {
                     buildsystem,
                     config_opts,
                     build_commands,
+                    post_install,
                     ..
-                } => match buildsystem.as_deref() {
-                    Some("meson") => self.run_meson(repo_dir_str, config_opts.as_ref())?,
-                    Some("cmake") | Some("cmake-ninja") => {
-                        self.run_cmake(repo_dir_str, config_opts.as_ref())?
+                } => {
+                    match buildsystem.as_deref() {
+                        Some("meson") => self.run_meson(repo_dir_str, config_opts.as_ref())?,
+                        Some("cmake") | Some("cmake-ninja") => {
+                            self.run_cmake(repo_dir_str, config_opts.as_ref())?
+                        }
+                        Some("simple") => self.run_simple(repo_dir_str, build_commands.as_ref())?,
+                        _ => self.run_autotools(repo_dir_str, config_opts.as_ref())?,
                     }
-                    Some("simple") => self.run_simple(repo_dir_str, build_commands.as_ref())?,
-                    _ => self.run_autotools(repo_dir_str, config_opts.as_ref())?,
-                },
+                    if let Some(post_install) = post_install {
+                        for command in post_install {
+                            let args: Vec<&str> = command.split_whitespace().collect();
+                            run_command(args[0], &args[1..], Some(self.state.base_dir.as_path()))?;
+                        }
+                    }
+                }
                 Module::Reference(_) => {
                     // Skip string references for build_application
                 }
-            }
-        }
-
-        if let Some(Module::Object {
-            post_install: Some(post_install),
-            ..
-        }) = manifest.modules.last()
-        {
-            for command in post_install {
-                let args: Vec<&str> = command.split_whitespace().collect();
-                run_command(args[0], &args[1..], Some(self.state.base_dir.as_path()))?;
             }
         }
 
@@ -377,31 +375,30 @@ impl<'a> FlatpakManager<'a> {
         let manifest = self.manifest.as_ref().unwrap();
         let repo_dir = self.build_dir().join("repo");
 
-        let mut args = vec![
-            "build".to_string(),
-            "--with-appdir".to_string(),
-            "--allow=devel".to_string(),
-            "--talk-name=org.freedesktop.portal.*".to_string(),
-            "--talk-name=org.a11y.Bus".to_string(),
-        ];
+        let mut args: Vec<String> = [
+            "build",
+            "--with-appdir",
+            "--allow=devel",
+            "--talk-name=org.freedesktop.portal.*",
+            "--talk-name=org.a11y.Bus",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
 
-        for (key, value) in get_host_env() {
-            args.push(format!("--env={key}={value}"));
-        }
+        args.extend(
+            get_host_env()
+                .into_iter()
+                .map(|(key, value)| format!("--env={key}={value}")),
+        );
 
-        for arg in get_a11y_bus_args() {
-            args.push(arg);
-        }
+        args.extend(get_a11y_bus_args());
 
-        for arg in &manifest.finish_args {
-            args.push(arg.clone());
-        }
+        args.extend(manifest.finish_args.clone());
         args.push(repo_dir.to_str().unwrap().to_string());
         args.push(manifest.command.clone());
         if let Some(x_run_args) = &manifest.x_run_args {
-            for arg in x_run_args {
-                args.push(arg.clone());
-            }
+            args.extend(x_run_args.clone());
         }
 
         let args_str: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
@@ -449,12 +446,10 @@ impl<'a> FlatpakManager<'a> {
         )?;
 
         // Finalize build
-        let mut args = vec!["build-finish".to_string()];
+        let mut args: Vec<String> = vec!["build-finish".to_string()];
 
-        for arg in &manifest.finish_args {
-            args.push(arg.clone());
-        }
-        args.push(format!("--command={}", manifest.command.clone()));
+        args.extend(manifest.finish_args.clone());
+        args.push(format!("--command={}", manifest.command));
         args.push(finalized_repo_dir.to_str().unwrap().to_string());
 
         let args_str: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
@@ -556,21 +551,22 @@ impl<'a> FlatpakManager<'a> {
             return Ok(());
         }
 
-        let mut default_selection = 0;
         let manifest_strings: Vec<String> = manifests
             .iter()
-            .enumerate()
-            .map(|(i, p)| {
+            .map(|p| {
                 let path_str = p.to_str().unwrap().to_string();
-                if let Some(active_manifest) = &self.state.active_manifest {
-                    if active_manifest == p {
-                        default_selection = i;
-                        return format!("{} {}", "*".green().bold(), path_str);
-                    }
+                if self.state.active_manifest.as_ref() == Some(p) {
+                    format!("{} {}", "*".green().bold(), path_str)
+                } else {
+                    format!("  {path_str}")
                 }
-                format!("  {path_str}")
             })
             .collect();
+
+        let default_selection = manifests
+            .iter()
+            .position(|p| self.state.active_manifest.as_ref() == Some(p))
+            .unwrap_or(0);
 
         let theme = ColorfulTheme::default();
         let selection = Select::with_theme(&theme)
