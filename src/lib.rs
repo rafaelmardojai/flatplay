@@ -105,10 +105,6 @@ impl<'a> FlatpakManager<'a> {
 
     pub fn init(&mut self) -> Result<()> {
         if self.is_build_initialized()? {
-            println!(
-                "{}",
-                "Skipped build initialization. Already initialized.".green()
-            );
             return Ok(());
         }
 
